@@ -1,0 +1,439 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Generate project files
+        run: |
+          mkdir -p $(dirname settings.gradle)
+          cat > settings.gradle <<'EOF_FILE'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ReverseSnake"
+          include ':app'
+          EOF_FILE
+          mkdir -p $(dirname build.gradle)
+          cat > build.gradle <<'EOF_FILE'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_FILE
+          mkdir -p $(dirname gradle.properties)
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          EOF_FILE
+          mkdir -p $(dirname app/build.gradle)
+          cat > app/build.gradle <<'EOF_FILE'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.example.reversesnake'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.reversesnake"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/AndroidManifest.xml)
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="true"
+                  android:label="@string/app_name"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/values/strings.xml)
+          cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Обратная змейка</string>
+          </resources>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/values/styles.xml)
+          cat > app/src/main/res/values/styles.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+              </style>
+          </resources>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/example/reversesnake/MainActivity.java)
+          cat > app/src/main/java/com/example/reversesnake/MainActivity.java <<'EOF_FILE'
+          package com.example.reversesnake;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+
+          public class MainActivity extends Activity {
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  setContentView(new GameView(this));
+              }
+
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                              View.SYSTEM_UI_FLAG_FULLSCREEN
+                                      | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                      | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+                  }
+              }
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/example/reversesnake/GameView.java)
+          cat > app/src/main/java/com/example/reversesnake/GameView.java <<'EOF_FILE'
+          package com.example.reversesnake;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.RectF;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.MotionEvent;
+          import android.view.View;
+
+          import java.util.ArrayList;
+          import java.util.Random;
+
+          /**
+           * Обратная змейка: змейка сама растёт со временем, а съеденное яблоко её УКОРАЧИВАЕТ.
+           * Цель уровня — сжаться до длины 2. Управление — свайпы по экрану.
+           */
+          public class GameView extends View {
+
+              private static final int COLS = 16;
+              private static final int READY = 0, PLAY = 1, OVER = 2, LEVEL_DONE = 3;
+              private static final int GOAL_LENGTH = 2;
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final Random rnd = new Random();
+              private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final RectF rect = new RectF();
+              private final ArrayList<int[]> snake = new ArrayList<>(); // [0] — голова
+              private final int[] food = new int[2];
+              private final SharedPreferences prefs;
+
+              private int rows, cell, offX, offY;
+              private int dx = 1, dy = 0;
+              private int pendDx = 1, pendDy = 0;
+              private int state = READY;
+              private int level = 1, score = 0, best = 0, ticks = 0;
+              private float downX, downY;
+              private long lastEnd = 0;
+
+              private final Runnable loop = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (state == PLAY) {
+                          step();
+                          invalidate();
+                          if (state == PLAY) handler.postDelayed(this, tickDelay());
+                      }
+                  }
+              };
+
+              public GameView(Context context) {
+                  super(context);
+                  prefs = context.getSharedPreferences("snake", Context.MODE_PRIVATE);
+                  best = prefs.getInt("best", 0);
+              }
+
+              private long tickDelay() {
+                  return Math.max(80, 190 - level * 10);
+              }
+
+              private int growEvery() {
+                  return Math.max(3, 9 - level);
+              }
+
+              @Override
+              protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+                  cell = w / COLS;
+                  offX = (w - cell * COLS) / 2;
+                  offY = (int) (cell * 2.6f);
+                  rows = Math.max(8, (h - offY - cell) / cell);
+                  startLevel();
+              }
+
+              @Override
+              protected void onVisibilityChanged(View changedView, int visibility) {
+                  super.onVisibilityChanged(changedView, visibility);
+                  if (visibility != VISIBLE) handler.removeCallbacks(loop);
+              }
+
+              @Override
+              protected void onWindowVisibilityChanged(int visibility) {
+                  super.onWindowVisibilityChanged(visibility);
+                  if (visibility != VISIBLE) {
+                      handler.removeCallbacks(loop);
+                      if (state == PLAY) state = READY; // пауза при сворачивании
+                  }
+              }
+
+              private void startLevel() {
+                  handler.removeCallbacks(loop);
+                  snake.clear();
+                  int len = Math.min(COLS - 3, 7 + level * 2);
+                  int y = rows / 2;
+                  for (int i = 0; i < len; i++) snake.add(new int[]{len - 1 - i, y});
+                  dx = 1; dy = 0; pendDx = 1; pendDy = 0;
+                  ticks = 0;
+                  placeFood();
+                  state = READY;
+                  invalidate();
+              }
+
+              private void placeFood() {
+                  while (true) {
+                      int x = rnd.nextInt(COLS), y = rnd.nextInt(rows);
+                      boolean free = true;
+                      for (int[] s : snake) {
+                          if (s[0] == x && s[1] == y) { free = false; break; }
+                      }
+                      if (free) { food[0] = x; food[1] = y; return; }
+                  }
+              }
+
+              private void step() {
+                  dx = pendDx; dy = pendDy;
+                  int[] head = snake.get(0);
+                  int nx = head[0] + dx, ny = head[1] + dy;
+
+                  if (nx < 0 || ny < 0 || nx >= COLS || ny >= rows) { gameOver(); return; }
+
+                  boolean eat = nx == food[0] && ny == food[1];
+                  ticks++;
+                  boolean grow = !eat && ticks % growEvery() == 0;
+
+                  // хвост освободит клетку, если змейка не растёт
+                  int occupied = snake.size() - (grow ? 0 : 1);
+                  for (int i = 0; i < occupied; i++) {
+                      int[] s = snake.get(i);
+                      if (s[0] == nx && s[1] == ny) { gameOver(); return; }
+                  }
+
+                  snake.add(0, new int[]{nx, ny});
+                  int removes = eat ? 3 : (grow ? 0 : 1); // яблоко: итого -2 к длине
+                  for (int i = 0; i < removes && snake.size() > 1; i++) {
+                      snake.remove(snake.size() - 1);
+                  }
+
+                  if (eat) {
+                      score++;
+                      if (snake.size() <= GOAL_LENGTH) { levelDone(); return; }
+                      placeFood();
+                  }
+              }
+
+              private void saveBest() {
+                  if (score > best) {
+                      best = score;
+                      prefs.edit().putInt("best", best).apply();
+                  }
+              }
+
+              private void gameOver() {
+                  state = OVER;
+                  lastEnd = System.currentTimeMillis();
+                  saveBest();
+              }
+
+              private void levelDone() {
+                  state = LEVEL_DONE;
+                  lastEnd = System.currentTimeMillis();
+                  saveBest();
+              }
+
+              private void setDir(int ndx, int ndy) {
+                  if (ndx == -dx && ndy == -dy) return; // нельзя разворачиваться на 180°
+                  pendDx = ndx; pendDy = ndy;
+              }
+
+              @Override
+              public boolean onTouchEvent(MotionEvent e) {
+                  switch (e.getActionMasked()) {
+                      case MotionEvent.ACTION_DOWN:
+                          downX = e.getX(); downY = e.getY();
+                          if (state != PLAY && System.currentTimeMillis() - lastEnd > 500) {
+                              if (state == OVER) { level = 1; score = 0; startLevel(); }
+                              else if (state == LEVEL_DONE) { level++; startLevel(); }
+                              state = PLAY;
+                              handler.removeCallbacks(loop);
+                              handler.postDelayed(loop, tickDelay());
+                              invalidate();
+                          }
+                          return true;
+                      case MotionEvent.ACTION_MOVE:
+                          if (state == PLAY) {
+                              float mx = e.getX() - downX, my = e.getY() - downY;
+                              float thr = cell * 0.9f;
+                              if (Math.abs(mx) > thr || Math.abs(my) > thr) {
+                                  if (Math.abs(mx) > Math.abs(my)) setDir(mx > 0 ? 1 : -1, 0);
+                                  else setDir(0, my > 0 ? 1 : -1);
+                                  downX = e.getX(); downY = e.getY();
+                              }
+                          }
+                          return true;
+                  }
+                  return true;
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  c.drawColor(0xFF0E141B);
+
+                  // поле
+                  paint.setStyle(Paint.Style.FILL);
+                  paint.setColor(0xFF16212C);
+                  rect.set(offX, offY, offX + COLS * cell, offY + rows * cell);
+                  c.drawRoundRect(rect, cell * 0.3f, cell * 0.3f, paint);
+
+                  // яблоко
+                  paint.setColor(0xFFFF4D5A);
+                  c.drawCircle(offX + (food[0] + 0.5f) * cell, offY + (food[1] + 0.5f) * cell, cell * 0.38f, paint);
+
+                  // змейка
+                  int n = snake.size();
+                  for (int i = n - 1; i >= 0; i--) {
+                      int[] s = snake.get(i);
+                      float t = n > 1 ? (float) i / (n - 1) : 0f;
+                      int g = (int) (230 - 90 * t);
+                      paint.setColor(i == 0 ? 0xFFB6FF6B : Color.rgb(40, g, 90));
+                      float pad = cell * (i == 0 ? 0.04f : 0.09f);
+                      rect.set(offX + s[0] * cell + pad, offY + s[1] * cell + pad,
+                              offX + (s[0] + 1) * cell - pad, offY + (s[1] + 1) * cell - pad);
+                      c.drawRoundRect(rect, cell * 0.3f, cell * 0.3f, paint);
+                  }
+
+                  // HUD
+                  paint.setColor(Color.WHITE);
+                  paint.setTextAlign(Paint.Align.LEFT);
+                  paint.setTextSize(cell * 0.7f);
+                  c.drawText("Уровень " + level + "   Яблок: " + score, offX, cell * 1.2f, paint);
+                  paint.setColor(0xFFB6FF6B);
+                  c.drawText("Длина: " + n + " → цель " + GOAL_LENGTH, offX, cell * 2.1f, paint);
+                  paint.setColor(0xFF8899AA);
+                  paint.setTextAlign(Paint.Align.RIGHT);
+                  c.drawText("Рекорд " + best, offX + COLS * cell, cell * 1.2f, paint);
+
+                  if (state != PLAY) drawOverlay(c);
+              }
+
+              private void drawOverlay(Canvas c) {
+                  paint.setColor(0xB0000000);
+                  c.drawRect(0, 0, getWidth(), getHeight(), paint);
+
+                  String title, line1, line2;
+                  if (state == OVER) {
+                      title = "Игра окончена";
+                      line1 = "Яблок съедено: " + score;
+                      line2 = "Коснись экрана — заново";
+                  } else if (state == LEVEL_DONE) {
+                      title = "Уровень пройден!";
+                      line1 = "Змейка сжалась до минимума";
+                      line2 = "Коснись — следующий уровень";
+                  } else {
+                      title = "Обратная змейка";
+                      line1 = "Ешь яблоки — змейка становится короче.";
+                      line2 = "Она сама растёт! Свайпы — управление.";
+                  }
+                  paint.setTextAlign(Paint.Align.CENTER);
+                  float cx = getWidth() / 2f, cy = getHeight() / 2f;
+                  paint.setColor(0xFFB6FF6B);
+                  paint.setTextSize(cell * 1.2f);
+                  c.drawText(title, cx, cy - cell, paint);
+                  paint.setColor(Color.WHITE);
+                  paint.setTextSize(cell * 0.7f);
+                  c.drawText(line1, cx, cy + cell * 0.4f, paint);
+                  c.drawText(line2, cx, cy + cell * 1.4f, paint);
+                  if (state == READY) {
+                      paint.setColor(0xFF8899AA);
+                      c.drawText("Коснись экрана, чтобы начать", cx, cy + cell * 3f, paint);
+                  }
+              }
+          }
+          EOF_FILE
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReverseSnake-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
