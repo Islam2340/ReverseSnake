@@ -89,6 +89,7 @@ jobs:
 
               <application
                   android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
                   android:label="@string/app_name"
                   android:theme="@style/AppTheme">
 
@@ -119,6 +120,55 @@ jobs:
                   <item name="android:windowBackground">@android:color/black</item>
               </style>
           </resources>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/values/colors.xml)
+          cat > app/src/main/res/values/colors.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_bg">#0E141B</color>
+          </resources>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/drawable/ic_launcher_foreground.xml)
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:pathData="M36,34 L72,34 Q80,34 80,42 Q80,50 72,50 L40,50 Q32,50 32,58 Q32,66 40,66 L60,66"
+                  android:strokeColor="#B6FF6B"
+                  android:strokeWidth="10"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000" />
+              <path
+                  android:pathData="M60,66 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0"
+                  android:fillColor="#B6FF6B" />
+              <path
+                  android:pathData="M62,63 m-1.8,0 a1.8,1.8 0 1,0 3.6,0 a1.8,1.8 0 1,0 -3.6,0"
+                  android:fillColor="#0E141B" />
+              <path
+                  android:pathData="M76,66 m-5.5,0 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0"
+                  android:fillColor="#FF4D5A" />
+          </vector>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/mipmap-anydpi-v21/ic_launcher.xml)
+          cat > app/src/main/res/mipmap-anydpi-v21/ic_launcher.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item android:drawable="@color/ic_bg" />
+              <item android:drawable="@drawable/ic_launcher_foreground" />
+          </layer-list>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml)
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_bg" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
           EOF_FILE
           mkdir -p $(dirname app/src/main/java/com/example/reversesnake/MainActivity.java)
           cat > app/src/main/java/com/example/reversesnake/MainActivity.java <<'EOF_FILE'
@@ -162,6 +212,7 @@ jobs:
           import android.graphics.Canvas;
           import android.graphics.Color;
           import android.graphics.Paint;
+          import android.graphics.Path;
           import android.graphics.RectF;
           import android.os.Handler;
           import android.os.Looper;
@@ -173,29 +224,34 @@ jobs:
 
           /**
            * Обратная змейка: змейка сама растёт со временем, а съеденное яблоко её УКОРАЧИВАЕТ.
-           * Цель уровня — сжаться до длины 2. Управление — свайпы по экрану.
+           * Цель уровня — сжаться до длины 2. Управление — свайпы, ускорение — кнопка (удерживать).
            */
           public class GameView extends View {
 
               private static final int COLS = 16;
               private static final int READY = 0, PLAY = 1, OVER = 2, LEVEL_DONE = 3;
               private static final int GOAL_LENGTH = 2;
+              private static final float BOOST_FACTOR = 2.2f;
 
               private final Handler handler = new Handler(Looper.getMainLooper());
               private final Random rnd = new Random();
               private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
               private final RectF rect = new RectF();
+              private final Path path = new Path();
               private final ArrayList<int[]> snake = new ArrayList<>(); // [0] — голова
-              private final int[] food = new int[2];
+              private final ArrayList<int[]> foods = new ArrayList<>();
               private final SharedPreferences prefs;
 
               private int rows, cell, offX, offY;
+              private float btnX, btnY, btnR;
               private int dx = 1, dy = 0;
               private int pendDx = 1, pendDy = 0;
               private int state = READY;
               private int level = 1, score = 0, best = 0, ticks = 0;
               private float downX, downY;
               private long lastEnd = 0;
+              private int steerId = -1, boostId = -1;
+              private boolean boosting = false;
 
               private final Runnable loop = new Runnable() {
                   @Override
@@ -215,11 +271,17 @@ jobs:
               }
 
               private long tickDelay() {
-                  return Math.max(80, 190 - level * 10);
+                  float base = Math.max(80, 190 - level * 10);
+                  return (long) (boosting ? Math.max(35f, base / BOOST_FACTOR) : base);
               }
 
               private int growEvery() {
                   return Math.max(3, 9 - level);
+              }
+
+              /** Сколько яблок одновременно на поле: 2 на первых уровнях, потом 3. */
+              private int appleCount() {
+                  return level >= 3 ? 3 : 2;
               }
 
               @Override
@@ -227,14 +289,12 @@ jobs:
                   cell = w / COLS;
                   offX = (w - cell * COLS) / 2;
                   offY = (int) (cell * 2.6f);
-                  rows = Math.max(8, (h - offY - cell) / cell);
+                  rows = Math.max(8, (int) ((h - offY - cell * 4.4f) / cell));
+                  btnR = cell * 1.6f;
+                  btnX = offX + COLS * cell - btnR - cell * 0.3f;
+                  float free = h - (offY + rows * cell);
+                  btnY = offY + rows * cell + free / 2f;
                   startLevel();
-              }
-
-              @Override
-              protected void onVisibilityChanged(View changedView, int visibility) {
-                  super.onVisibilityChanged(changedView, visibility);
-                  if (visibility != VISIBLE) handler.removeCallbacks(loop);
               }
 
               @Override
@@ -243,31 +303,42 @@ jobs:
                   if (visibility != VISIBLE) {
                       handler.removeCallbacks(loop);
                       if (state == PLAY) state = READY; // пауза при сворачивании
+                      boosting = false; boostId = -1; steerId = -1;
                   }
               }
 
               private void startLevel() {
                   handler.removeCallbacks(loop);
                   snake.clear();
+                  foods.clear();
                   int len = Math.min(COLS - 3, 7 + level * 2);
                   int y = rows / 2;
                   for (int i = 0; i < len; i++) snake.add(new int[]{len - 1 - i, y});
                   dx = 1; dy = 0; pendDx = 1; pendDy = 0;
                   ticks = 0;
-                  placeFood();
+                  refillFoods();
                   state = READY;
                   invalidate();
               }
 
-              private void placeFood() {
-                  while (true) {
+              private boolean isFree(int x, int y) {
+                  for (int[] s : snake) if (s[0] == x && s[1] == y) return false;
+                  for (int[] f : foods) if (f[0] == x && f[1] == y) return false;
+                  return true;
+              }
+
+              private void refillFoods() {
+                  while (foods.size() < appleCount()) {
                       int x = rnd.nextInt(COLS), y = rnd.nextInt(rows);
-                      boolean free = true;
-                      for (int[] s : snake) {
-                          if (s[0] == x && s[1] == y) { free = false; break; }
-                      }
-                      if (free) { food[0] = x; food[1] = y; return; }
+                      if (isFree(x, y)) foods.add(new int[]{x, y});
                   }
+              }
+
+              private int foodAt(int x, int y) {
+                  for (int i = 0; i < foods.size(); i++) {
+                      if (foods.get(i)[0] == x && foods.get(i)[1] == y) return i;
+                  }
+                  return -1;
               }
 
               private void step() {
@@ -277,7 +348,8 @@ jobs:
 
                   if (nx < 0 || ny < 0 || nx >= COLS || ny >= rows) { gameOver(); return; }
 
-                  boolean eat = nx == food[0] && ny == food[1];
+                  int fi = foodAt(nx, ny);
+                  boolean eat = fi >= 0;
                   ticks++;
                   boolean grow = !eat && ticks % growEvery() == 0;
 
@@ -295,9 +367,10 @@ jobs:
                   }
 
                   if (eat) {
+                      foods.remove(fi);
                       score++;
                       if (snake.size() <= GOAL_LENGTH) { levelDone(); return; }
-                      placeFood();
+                      refillFoods();
                   }
               }
 
@@ -325,31 +398,67 @@ jobs:
                   pendDx = ndx; pendDy = ndy;
               }
 
+              private boolean inButton(float x, float y) {
+                  float ddx = x - btnX, ddy = y - btnY;
+                  float r = btnR * 1.25f; // чуть больше видимой кнопки — удобнее попадать
+                  return ddx * ddx + ddy * ddy <= r * r;
+              }
+
+              private void tryStart() {
+                  if (state == PLAY || System.currentTimeMillis() - lastEnd < 500) return;
+                  if (state == OVER) { level = 1; score = 0; startLevel(); }
+                  else if (state == LEVEL_DONE) { level++; startLevel(); }
+                  state = PLAY;
+                  handler.removeCallbacks(loop);
+                  handler.postDelayed(loop, tickDelay());
+                  invalidate();
+              }
+
               @Override
               public boolean onTouchEvent(MotionEvent e) {
-                  switch (e.getActionMasked()) {
+                  int action = e.getActionMasked();
+                  int idx = e.getActionIndex();
+                  int id = e.getPointerId(idx);
+
+                  switch (action) {
                       case MotionEvent.ACTION_DOWN:
-                          downX = e.getX(); downY = e.getY();
-                          if (state != PLAY && System.currentTimeMillis() - lastEnd > 500) {
-                              if (state == OVER) { level = 1; score = 0; startLevel(); }
-                              else if (state == LEVEL_DONE) { level++; startLevel(); }
-                              state = PLAY;
-                              handler.removeCallbacks(loop);
-                              handler.postDelayed(loop, tickDelay());
-                              invalidate();
+                      case MotionEvent.ACTION_POINTER_DOWN: {
+                          float x = e.getX(idx), y = e.getY(idx);
+                          tryStart();
+                          if (inButton(x, y)) {
+                              boostId = id;
+                              boosting = true;
+                          } else if (steerId == -1) {
+                              steerId = id;
+                              downX = x; downY = y;
                           }
-                          return true;
+                          invalidate();
+                          break;
+                      }
                       case MotionEvent.ACTION_MOVE:
-                          if (state == PLAY) {
-                              float mx = e.getX() - downX, my = e.getY() - downY;
-                              float thr = cell * 0.9f;
-                              if (Math.abs(mx) > thr || Math.abs(my) > thr) {
-                                  if (Math.abs(mx) > Math.abs(my)) setDir(mx > 0 ? 1 : -1, 0);
-                                  else setDir(0, my > 0 ? 1 : -1);
-                                  downX = e.getX(); downY = e.getY();
+                          if (state == PLAY && steerId != -1) {
+                              int i = e.findPointerIndex(steerId);
+                              if (i >= 0) {
+                                  float mx = e.getX(i) - downX, my = e.getY(i) - downY;
+                                  float thr = cell * 0.9f;
+                                  if (Math.abs(mx) > thr || Math.abs(my) > thr) {
+                                      if (Math.abs(mx) > Math.abs(my)) setDir(mx > 0 ? 1 : -1, 0);
+                                      else setDir(0, my > 0 ? 1 : -1);
+                                      downX = e.getX(i); downY = e.getY(i);
+                                  }
                               }
                           }
-                          return true;
+                          break;
+                      case MotionEvent.ACTION_UP:
+                      case MotionEvent.ACTION_POINTER_UP:
+                          if (id == boostId) { boostId = -1; boosting = false; }
+                          if (id == steerId) steerId = -1;
+                          invalidate();
+                          break;
+                      case MotionEvent.ACTION_CANCEL:
+                          boostId = -1; boosting = false; steerId = -1;
+                          invalidate();
+                          break;
                   }
                   return true;
               }
@@ -364,9 +473,14 @@ jobs:
                   rect.set(offX, offY, offX + COLS * cell, offY + rows * cell);
                   c.drawRoundRect(rect, cell * 0.3f, cell * 0.3f, paint);
 
-                  // яблоко
-                  paint.setColor(0xFFFF4D5A);
-                  c.drawCircle(offX + (food[0] + 0.5f) * cell, offY + (food[1] + 0.5f) * cell, cell * 0.38f, paint);
+                  // яблоки
+                  for (int[] f : foods) {
+                      float fx = offX + (f[0] + 0.5f) * cell, fy = offY + (f[1] + 0.5f) * cell;
+                      paint.setColor(0xFFFF4D5A);
+                      c.drawCircle(fx, fy, cell * 0.38f, paint);
+                      paint.setColor(0xFF5BD16A);
+                      c.drawCircle(fx + cell * 0.12f, fy - cell * 0.36f, cell * 0.1f, paint);
+                  }
 
                   // змейка
                   int n = snake.size();
@@ -374,7 +488,7 @@ jobs:
                       int[] s = snake.get(i);
                       float t = n > 1 ? (float) i / (n - 1) : 0f;
                       int g = (int) (230 - 90 * t);
-                      paint.setColor(i == 0 ? 0xFFB6FF6B : Color.rgb(40, g, 90));
+                      paint.setColor(i == 0 ? (boosting ? 0xFFFFE86B : 0xFFB6FF6B) : Color.rgb(40, g, 90));
                       float pad = cell * (i == 0 ? 0.04f : 0.09f);
                       rect.set(offX + s[0] * cell + pad, offY + s[1] * cell + pad,
                               offX + (s[0] + 1) * cell - pad, offY + (s[1] + 1) * cell - pad);
@@ -392,7 +506,32 @@ jobs:
                   paint.setTextAlign(Paint.Align.RIGHT);
                   c.drawText("Рекорд " + best, offX + COLS * cell, cell * 1.2f, paint);
 
+                  drawBoostButton(c);
+
                   if (state != PLAY) drawOverlay(c);
+              }
+
+              private void drawBoostButton(Canvas c) {
+                  paint.setStyle(Paint.Style.FILL);
+                  paint.setColor(boosting ? 0xFFFFE86B : 0xFF223445);
+                  c.drawCircle(btnX, btnY, btnR, paint);
+                  paint.setStyle(Paint.Style.STROKE);
+                  paint.setStrokeWidth(cell * 0.12f);
+                  paint.setColor(boosting ? 0xFFFFFFFF : 0xFF5C7C99);
+                  c.drawCircle(btnX, btnY, btnR, paint);
+                  paint.setStyle(Paint.Style.FILL);
+
+                  paint.setColor(boosting ? 0xFF0E141B : 0xFFB6FF6B);
+                  float s = btnR * 0.38f;
+                  for (int k = 0; k < 2; k++) {
+                      float x0 = btnX - s * 1.25f + k * s * 1.1f;
+                      path.reset();
+                      path.moveTo(x0, btnY - s);
+                      path.lineTo(x0, btnY + s);
+                      path.lineTo(x0 + s, btnY);
+                      path.close();
+                      c.drawPath(path, paint);
+                  }
               }
 
               private void drawOverlay(Canvas c) {
@@ -411,7 +550,7 @@ jobs:
                   } else {
                       title = "Обратная змейка";
                       line1 = "Ешь яблоки — змейка становится короче.";
-                      line2 = "Она сама растёт! Свайпы — управление.";
+                      line2 = "Она сама растёт! Свайпы — поворот.";
                   }
                   paint.setTextAlign(Paint.Align.CENTER);
                   float cx = getWidth() / 2f, cy = getHeight() / 2f;
@@ -423,8 +562,10 @@ jobs:
                   c.drawText(line1, cx, cy + cell * 0.4f, paint);
                   c.drawText(line2, cx, cy + cell * 1.4f, paint);
                   if (state == READY) {
+                      paint.setColor(0xFFFFE86B);
+                      c.drawText("Кнопка внизу справа — ускорение (держи)", cx, cy + cell * 2.6f, paint);
                       paint.setColor(0xFF8899AA);
-                      c.drawText("Коснись экрана, чтобы начать", cx, cy + cell * 3f, paint);
+                      c.drawText("Коснись экрана, чтобы начать", cx, cy + cell * 3.8f, paint);
                   }
               }
           }
